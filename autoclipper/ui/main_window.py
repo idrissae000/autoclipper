@@ -734,10 +734,22 @@ class MainWindow(QMainWindow):
         btn_tp.clicked.connect(self._browse_train_positives)
         vbox.addWidget(_field("Positives directory", self.le_train_positives, btn_tp))
 
-        self.le_train_sources = _make_line_edit("Raw source video folder  (for auto-generating negatives)")
-        btn_ts = _browse_btn()
-        btn_ts.clicked.connect(self._browse_train_sources)
-        vbox.addWidget(_field("Source videos", self.le_train_sources, btn_ts))
+        self.le_train_sources = _make_line_edit("Single video file or folder of source videos  (for negatives)")
+        btn_ts_file = _browse_btn("File")
+        btn_ts_file.setFixedWidth(58)
+        btn_ts_file.clicked.connect(self._browse_train_sources_file)
+        btn_ts_dir = _browse_btn("Folder")
+        btn_ts_dir.setFixedWidth(66)
+        btn_ts_dir.clicked.connect(self._browse_train_sources_dir)
+        # Two browse buttons side by side – build the row manually
+        src_row = QWidget()
+        src_h = QHBoxLayout(src_row)
+        src_h.setContentsMargins(0, 0, 0, 0)
+        src_h.setSpacing(6)
+        src_h.addWidget(self.le_train_sources)
+        src_h.addWidget(btn_ts_file)
+        src_h.addWidget(btn_ts_dir)
+        vbox.addWidget(_field("Source videos", src_row))
 
         self.le_train_output = _make_line_edit(text="models/aesthetic.pt")
         btn_to = _browse_btn()
@@ -875,7 +887,15 @@ class MainWindow(QMainWindow):
         if p:
             self.le_train_positives.setText(p)
 
-    def _browse_train_sources(self) -> None:
+    def _browse_train_sources_file(self) -> None:
+        p, _ = QFileDialog.getOpenFileName(
+            self, "Select source video file",
+            "", "Video files (*.mp4 *.mkv *.mov *.avi *.ts);;All files (*)"
+        )
+        if p:
+            self.le_train_sources.setText(p)
+
+    def _browse_train_sources_dir(self) -> None:
         p = QFileDialog.getExistingDirectory(self, "Select source videos folder")
         if p:
             self.le_train_sources.setText(p)
@@ -947,7 +967,7 @@ class MainWindow(QMainWindow):
         if not positives or not sources:
             QMessageBox.warning(
                 self, "Missing fields",
-                "Positives folder and source videos folder are both required."
+                "Positives folder and source videos (file or folder) are both required."
             )
             return
 

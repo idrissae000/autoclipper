@@ -1,63 +1,455 @@
 """
-AutoClipper desktop UI built with PyQt5.
+AutoClipper – redesigned dark desktop UI.
 
-Layout:
-  ┌─────────────────────────────────────────────┐
-  │  [Input Video]  [Browse]                    │
-  │  [Character name]                           │
-  │  [Ref images] [Browse]  ─ OR ─              │
-  │  [Clips library] [Browse]                   │
-  │  [Model (optional)] [Browse]                │
-  │  [Output folder] [Browse]                   │
-  │  ─────────── Advanced ───────────           │
-  │  Motion threshold  [1.2]                    │
-  │  Aesthetic thresh  [0.55]                   │
-  │                                             │
-  │  [  Train Model  ]   [  Extract Clips  ]    │
-  │                                             │
-  │  ████████████████░░░░  42%                  │
-  │  Log output …                               │
-  └─────────────────────────────────────────────┘
+Premium dark tool aesthetic: near-black background, deep-red accent,
+tabbed layout, animated progress, colored terminal log.
 """
 
 from __future__ import annotations
 
+import html as _html
 import logging
-import sys
-import threading
 from pathlib import Path
 
-from PyQt5.QtCore import Qt, QThread, pyqtSignal
-from PyQt5.QtGui import QFont, QIcon
+from PyQt5.QtCore import (
+    Q_ARG,
+    QEasingCurve,
+    QMetaObject,
+    QPropertyAnimation,
+    QAbstractAnimation,
+    Qt,
+    QThread,
+    pyqtSignal,
+    pyqtSlot,
+)
+from PyQt5.QtGui import QFont, QColor
 from PyQt5.QtWidgets import (
     QApplication,
     QFileDialog,
-    QFormLayout,
-    QGroupBox,
+    QFrame,
+    QGraphicsOpacityEffect,
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QMainWindow,
     QMessageBox,
-    QPlainTextEdit,
     QProgressBar,
     QPushButton,
+    QScrollArea,
     QSizePolicy,
-    QSplitter,
+    QSlider,
+    QSpinBox,
+    QDoubleSpinBox,
+    QTabWidget,
+    QTextEdit,
+    QToolButton,
     QVBoxLayout,
     QWidget,
-    QDoubleSpinBox,
-    QSpinBox,
 )
 
 log = logging.getLogger(__name__)
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Design tokens
+# ─────────────────────────────────────────────────────────────────────────────
 
-# ── Worker threads ────────────────────────────────────────────────────────────
+STYLESHEET = """
+/* ── Base ─────────────────────────────────────────────────── */
+QWidget {
+    background-color: #0a0a0a;
+    color: #f0f0f0;
+    font-family: -apple-system, "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+    font-size: 13px;
+    outline: none;
+}
+
+/* ── Tab widget ───────────────────────────────────────────── */
+QTabWidget::pane {
+    border: none;
+    background: #0a0a0a;
+    top: -1px;
+}
+QTabWidget::tab-bar {
+    alignment: left;
+}
+QTabBar {
+    background: #0a0a0a;
+    border-bottom: 1px solid #1a1a1a;
+}
+QTabBar::tab {
+    background: transparent;
+    color: #888888;
+    border: none;
+    border-bottom: 2px solid transparent;
+    padding: 10px 28px;
+    font-size: 13px;
+    min-width: 90px;
+}
+QTabBar::tab:selected {
+    color: #f0f0f0;
+    border-bottom: 2px solid #c0392b;
+}
+QTabBar::tab:hover:!selected {
+    color: #cccccc;
+    border-bottom: 2px solid #3a3a3a;
+}
+QTabBar::tab:!selected {
+    margin-top: 2px;
+}
+
+/* ── Scroll areas ─────────────────────────────────────────── */
+QScrollArea {
+    border: none;
+    background: #0a0a0a;
+}
+QScrollBar:vertical {
+    background: #0a0a0a;
+    width: 5px;
+    margin: 0;
+    border: none;
+}
+QScrollBar::handle:vertical {
+    background: #2a2a2a;
+    border-radius: 2px;
+    min-height: 24px;
+}
+QScrollBar::handle:vertical:hover {
+    background: #3d3d3d;
+}
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical,
+QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {
+    height: 0; width: 0; border: none; background: none;
+}
+
+/* ── Line edits ───────────────────────────────────────────── */
+QLineEdit {
+    background: #1a1a1a;
+    border: 1px solid #2a2a2a;
+    border-radius: 8px;
+    color: #f0f0f0;
+    padding: 10px 12px;
+    font-size: 14px;
+    selection-background-color: #c0392b;
+    selection-color: #ffffff;
+}
+QLineEdit:hover { border-color: #444444; }
+QLineEdit:focus { border-color: #c0392b; background: #1c1010; }
+
+/* ── Spin boxes ───────────────────────────────────────────── */
+QSpinBox, QDoubleSpinBox {
+    background: #1a1a1a;
+    border: 1px solid #2a2a2a;
+    border-radius: 8px;
+    color: #f0f0f0;
+    padding: 9px 12px;
+    font-size: 14px;
+}
+QSpinBox:hover, QDoubleSpinBox:hover { border-color: #444444; }
+QSpinBox:focus, QDoubleSpinBox:focus { border-color: #c0392b; }
+QSpinBox::up-button, QSpinBox::down-button,
+QDoubleSpinBox::up-button, QDoubleSpinBox::down-button {
+    background: #222222;
+    border: none;
+    border-left: 1px solid #2a2a2a;
+    width: 22px;
+    border-radius: 0;
+}
+QSpinBox::up-button:hover, QSpinBox::down-button:hover,
+QDoubleSpinBox::up-button:hover, QDoubleSpinBox::down-button:hover {
+    background: #333333;
+}
+QSpinBox::up-arrow, QDoubleSpinBox::up-arrow {
+    border-left: 4px solid transparent;
+    border-right: 4px solid transparent;
+    border-bottom: 5px solid #888888;
+    width: 0; height: 0;
+}
+QSpinBox::down-arrow, QDoubleSpinBox::down-arrow {
+    border-left: 4px solid transparent;
+    border-right: 4px solid transparent;
+    border-top: 5px solid #888888;
+    width: 0; height: 0;
+}
+
+/* ── Buttons ──────────────────────────────────────────────── */
+QPushButton {
+    background: #161616;
+    color: #888888;
+    border: 1px solid #2a2a2a;
+    border-radius: 8px;
+    padding: 8px 16px;
+    font-size: 13px;
+}
+QPushButton:hover {
+    background: #1e1e1e;
+    color: #cccccc;
+    border-color: #444444;
+}
+QPushButton:pressed { background: #111111; }
+QPushButton:disabled { color: #3a3a3a; border-color: #1e1e1e; }
+
+QPushButton#primary {
+    background: #c0392b;
+    color: #ffffff;
+    border: none;
+    border-radius: 8px;
+    padding: 14px;
+    font-size: 14px;
+    font-weight: 600;
+    letter-spacing: 0.4px;
+}
+QPushButton#primary:hover { background: #e74c3c; }
+QPushButton#primary:pressed {
+    background: #a93226;
+    padding-top: 15px;
+    padding-bottom: 13px;
+}
+QPushButton#primary:disabled {
+    background: #3a1010;
+    color: #664444;
+}
+
+/* ── Sliders ──────────────────────────────────────────────── */
+QSlider::groove:horizontal {
+    height: 4px;
+    background: #2a2a2a;
+    border-radius: 2px;
+}
+QSlider::handle:horizontal {
+    background: #c0392b;
+    width: 16px;
+    height: 16px;
+    border-radius: 8px;
+    margin: -6px 0;
+    border: 2px solid #0a0a0a;
+}
+QSlider::handle:horizontal:hover { background: #e74c3c; }
+QSlider::sub-page:horizontal {
+    background: #c0392b;
+    border-radius: 2px;
+}
+
+/* ── Progress bar ─────────────────────────────────────────── */
+QProgressBar {
+    background: #161616;
+    border: none;
+    border-radius: 4px;
+    max-height: 8px;
+    min-height: 8px;
+    font-size: 0px;
+}
+QProgressBar::chunk {
+    background: qlineargradient(
+        x1:0, y1:0, x2:1, y2:0,
+        stop:0 #c0392b, stop:1 #e74c3c
+    );
+    border-radius: 4px;
+}
+
+/* ── Log terminal ─────────────────────────────────────────── */
+QTextEdit#log {
+    background: #050505;
+    border: 1px solid #1a1a1a;
+    border-radius: 8px;
+    font-family: "JetBrains Mono", "Consolas", "Monaco", "Courier New", monospace;
+    font-size: 12px;
+    color: #888888;
+    padding: 6px 8px;
+}
+
+/* ── Collapsible toggle ───────────────────────────────────── */
+QToolButton#collapse_toggle {
+    background: transparent;
+    color: #666666;
+    border: none;
+    font-size: 12px;
+    text-align: left;
+    padding: 2px 0;
+}
+QToolButton#collapse_toggle:hover { color: #aaaaaa; }
+
+/* ── Message boxes ────────────────────────────────────────── */
+QMessageBox { background: #161616; }
+QMessageBox QLabel { color: #f0f0f0; }
+QMessageBox QPushButton { min-width: 80px; }
+"""
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Custom widgets
+# ─────────────────────────────────────────────────────────────────────────────
+
+class LogView(QTextEdit):
+    """Terminal-style log panel with per-level coloring."""
+
+    _COLORS = {
+        logging.CRITICAL: "#ff4444",
+        logging.ERROR:    "#ff4444",
+        logging.WARNING:  "#ffaa33",
+        logging.INFO:     "#888888",
+        logging.DEBUG:    "#444444",
+    }
+    _SUCCESS_KW = ("done.", "complete", "saved", "extracted", "100%", "best model")
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setReadOnly(True)
+        self.setObjectName("log")
+        self.document().setMaximumBlockCount(3000)
+        # Remove default paragraph spacing so lines are compact
+        self.document().setDefaultStyleSheet(
+            "p, pre { margin: 0; padding: 0; line-height: 1.4; }"
+        )
+
+    @pyqtSlot(str)
+    def append_html(self, snippet: str) -> None:
+        cursor = self.textCursor()
+        cursor.movePosition(cursor.End)
+        self.setTextCursor(cursor)
+        self.insertHtml(snippet)
+        self.ensureCursorVisible()
+
+    def append_record(self, record: logging.LogRecord, formatted: str) -> None:
+        """Thread-safe: dispatch colored HTML to the main thread."""
+        color = self._COLORS.get(record.levelno, "#888888")
+        if record.levelno == logging.INFO:
+            low = formatted.lower()
+            if any(kw in low for kw in self._SUCCESS_KW):
+                color = "#00cc66"
+
+        escaped = _html.escape(formatted)
+        snippet = (
+            f'<span style="color:{color};white-space:pre;font-family:monospace">'
+            f'{escaped}</span><br>'
+        )
+        QMetaObject.invokeMethod(
+            self, "append_html",
+            Qt.QueuedConnection,
+            Q_ARG(str, snippet),
+        )
+
+
+class _ColorLogHandler(logging.Handler):
+    def __init__(self, view: LogView):
+        super().__init__()
+        self._view = view
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            msg = self.format(record)
+            self._view.append_record(record, msg)
+        except Exception:
+            self.handleError(record)
+
+
+class CollapsibleSection(QWidget):
+    """A toggle-able section with animated expand/collapse."""
+
+    def __init__(self, title: str, parent=None):
+        super().__init__(parent)
+        self._title = title
+
+        self.toggle = QToolButton(self)
+        self.toggle.setObjectName("collapse_toggle")
+        self.toggle.setCheckable(True)
+        self.toggle.setChecked(False)
+        self.toggle.setCursor(Qt.PointingHandCursor)
+        self.toggle.setText(f"▶  {title}")
+        self.toggle.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.toggle.clicked.connect(self._on_toggle)
+
+        self.content = QWidget()
+        self.content.setMaximumHeight(0)
+        self.content.setMinimumHeight(0)
+        self.content_layout = QVBoxLayout(self.content)
+        self.content_layout.setContentsMargins(0, 8, 0, 0)
+        self.content_layout.setSpacing(16)
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+        root.addWidget(self.toggle)
+        root.addWidget(self.content)
+
+        self._anim = QPropertyAnimation(self.content, b"maximumHeight")
+        self._anim.setDuration(220)
+        self._anim.setEasingCurve(QEasingCurve.InOutQuart)
+
+    def _on_toggle(self, checked: bool) -> None:
+        arrow = "▼" if checked else "▶"
+        self.toggle.setText(f"{arrow}  {self._title}")
+        if checked:
+            self.content.setMaximumHeight(16777215)
+            target = max(
+                self.content.sizeHint().height(),
+                self.content_layout.sizeHint().height() + 20,
+            )
+            self.content.setMaximumHeight(0)
+            self._anim.setStartValue(0)
+            self._anim.setEndValue(target)
+        else:
+            self._anim.setStartValue(self.content.maximumHeight())
+            self._anim.setEndValue(0)
+        self._anim.start()
+
+    def add_widget(self, widget: QWidget) -> None:
+        self.content_layout.addWidget(widget)
+
+
+class LabeledSlider(QWidget):
+    """Horizontal slider with a live value label."""
+
+    valueChanged = pyqtSignal(float)
+
+    def __init__(
+        self,
+        minimum: float,
+        maximum: float,
+        value: float,
+        scale: int = 100,
+        decimals: int = 2,
+        parent=None,
+    ):
+        super().__init__(parent)
+        self._scale = scale
+        self._decimals = decimals
+
+        self.slider = QSlider(Qt.Horizontal)
+        self.slider.setRange(int(minimum * scale), int(maximum * scale))
+        self.slider.setValue(int(value * scale))
+
+        self.val_label = QLabel(f"{value:.{decimals}f}")
+        self.val_label.setFixedWidth(46)
+        self.val_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        self.val_label.setStyleSheet("color: #c0392b; font-size: 13px; font-weight: 600;")
+
+        h = QHBoxLayout(self)
+        h.setContentsMargins(0, 0, 0, 0)
+        h.setSpacing(10)
+        h.addWidget(self.slider)
+        h.addWidget(self.val_label)
+
+        self.slider.valueChanged.connect(self._on_changed)
+
+    def _on_changed(self, v: int) -> None:
+        fval = v / self._scale
+        self.val_label.setText(f"{fval:.{self._decimals}f}")
+        self.valueChanged.emit(fval)
+
+    def value(self) -> float:
+        return self.slider.value() / self._scale
+
+    def setValue(self, v: float) -> None:
+        self.slider.setValue(int(v * self._scale))
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Worker threads (logic unchanged from original)
+# ─────────────────────────────────────────────────────────────────────────────
 
 class ExtractionWorker(QThread):
-    progress = pyqtSignal(str, float)    # message, 0..1
-    finished = pyqtSignal(list)          # list of ExtractedClip
+    progress = pyqtSignal(str, float)
+    finished = pyqtSignal(list)
     error = pyqtSignal(str)
 
     def __init__(self, config):
@@ -104,260 +496,401 @@ class TrainingWorker(QThread):
             self.error.emit(str(e))
 
 
-# ── Qt log handler ────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
+# UI building helpers
+# ─────────────────────────────────────────────────────────────────────────────
 
-class _QtLogHandler(logging.Handler):
-    def __init__(self, widget: QPlainTextEdit):
-        super().__init__()
-        self._widget = widget
-
-    def emit(self, record):
-        msg = self.format(record)
-        # Must dispatch to main thread
-        from PyQt5.QtCore import QMetaObject, Q_ARG
-        QMetaObject.invokeMethod(
-            self._widget, "appendPlainText",
-            Qt.QueuedConnection,
-            Q_ARG(str, msg),
-        )
+def _section_header(text: str) -> QLabel:
+    lbl = QLabel(text)
+    lbl.setStyleSheet(
+        "color: #f0f0f0; font-size: 15px; font-weight: 600; padding-top: 4px;"
+    )
+    return lbl
 
 
-# ── Widgets ───────────────────────────────────────────────────────────────────
-
-def _browse_file(parent, caption, filter=""):
-    path, _ = QFileDialog.getOpenFileName(parent, caption, "", filter)
-    return path
-
-
-def _browse_files(parent, caption, filter=""):
-    paths, _ = QFileDialog.getOpenFileNames(parent, caption, "", filter)
-    return paths
+def _muted_label(text: str) -> QLabel:
+    lbl = QLabel(text)
+    lbl.setStyleSheet("color: #888888; font-size: 12px;")
+    return lbl
 
 
-def _browse_dir(parent, caption):
-    return QFileDialog.getExistingDirectory(parent, caption)
+def _divider() -> QFrame:
+    line = QFrame()
+    line.setFrameShape(QFrame.HLine)
+    line.setFixedHeight(1)
+    line.setStyleSheet("background: #1e1e1e; border: none;")
+    return line
 
 
-def _path_row(parent, label: str, line_edit: QLineEdit, btn_label="Browse…") -> QWidget:
-    """Return a horizontal widget: label + line_edit + button."""
-    row = QWidget()
-    h = QHBoxLayout(row)
-    h.setContentsMargins(0, 0, 0, 0)
-    h.addWidget(line_edit)
-    btn = QPushButton(btn_label)
-    btn.setFixedWidth(90)
-    h.addWidget(btn)
-    return row, btn
+def _browse_btn(label: str = "…") -> QPushButton:
+    btn = QPushButton(label)
+    btn.setFixedWidth(52)
+    btn.setFixedHeight(40)
+    btn.setCursor(Qt.PointingHandCursor)
+    return btn
 
+
+def _field(
+    label_text: str,
+    widget: QWidget,
+    browse_btn: QPushButton | None = None,
+) -> QWidget:
+    """Label above + [input  browse?] row."""
+    container = QWidget()
+    vbox = QVBoxLayout(container)
+    vbox.setContentsMargins(0, 0, 0, 0)
+    vbox.setSpacing(5)
+    vbox.addWidget(_muted_label(label_text))
+
+    if browse_btn is not None:
+        row = QWidget()
+        h = QHBoxLayout(row)
+        h.setContentsMargins(0, 0, 0, 0)
+        h.setSpacing(6)
+        h.addWidget(widget)
+        h.addWidget(browse_btn)
+        vbox.addWidget(row)
+    else:
+        vbox.addWidget(widget)
+
+    return container
+
+
+def _spin_row(label_text: str, spin: QWidget) -> QWidget:
+    """Label on the left, spin on the right in a fixed-width column."""
+    container = QWidget()
+    vbox = QVBoxLayout(container)
+    vbox.setContentsMargins(0, 0, 0, 0)
+    vbox.setSpacing(5)
+    vbox.addWidget(_muted_label(label_text))
+    spin.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+    vbox.addWidget(spin)
+    return container
+
+
+def _scroll_tab(content_widget: QWidget) -> QScrollArea:
+    """Wrap content_widget in a frameless, horizontally-fixed scroll area."""
+    scroll = QScrollArea()
+    scroll.setWidgetResizable(True)
+    scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+    scroll.setFrameShape(QFrame.NoFrame)
+    scroll.setWidget(content_widget)
+    return scroll
+
+
+def _make_line_edit(placeholder: str = "", text: str = "") -> QLineEdit:
+    le = QLineEdit()
+    if placeholder:
+        le.setPlaceholderText(placeholder)
+    if text:
+        le.setText(text)
+    return le
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Main window
+# ─────────────────────────────────────────────────────────────────────────────
 
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("AutoClipper")
-        self.setMinimumSize(780, 700)
+        self.setMinimumSize(700, 800)
         self._worker: QThread | None = None
-        self._setup_ui()
+        self._prog_anim = None
+
+        self.setStyleSheet(STYLESHEET)
+        self._build_ui()
         self._setup_logging()
 
-    # ── UI setup ──────────────────────────────────────────────────────────────
+    # ── UI construction ───────────────────────────────────────────────────────
 
-    def _setup_ui(self):
+    def _build_ui(self) -> None:
         root = QWidget()
         self.setCentralWidget(root)
-        vbox = QVBoxLayout(root)
-        vbox.setSpacing(10)
-        vbox.setContentsMargins(14, 14, 14, 14)
 
-        # Title
+        root_vbox = QVBoxLayout(root)
+        root_vbox.setContentsMargins(0, 0, 0, 0)
+        root_vbox.setSpacing(0)
+
+        root_vbox.addWidget(self._build_header())
+        root_vbox.addWidget(self._build_tabs(), stretch=1)
+        root_vbox.addWidget(self._build_bottom_panel())
+
+        # Animated progress bar value
+        self._prog_anim = QPropertyAnimation(self.progress_bar, b"value")
+        self._prog_anim.setDuration(220)
+        self._prog_anim.setEasingCurve(QEasingCurve.OutCubic)
+
+    def _build_header(self) -> QWidget:
+        header = QWidget()
+        header.setFixedHeight(46)
+        header.setStyleSheet("background: #0d0d0d; border-bottom: 1px solid #1a1a1a;")
+
+        h = QHBoxLayout(header)
+        h.setContentsMargins(20, 0, 20, 0)
+
+        dot = QLabel("●")
+        dot.setStyleSheet("color: #c0392b; font-size: 11px;")
+        dot.setFixedWidth(18)
+
         title = QLabel("AutoClipper")
-        title.setFont(QFont("Arial", 16, QFont.Bold))
-        vbox.addWidget(title)
+        title.setStyleSheet(
+            "color: #f0f0f0; font-size: 13px; font-weight: 600; letter-spacing: 1px;"
+        )
 
-        # ── Extraction form ───────────────────────────────────────────────────
-        extract_group = QGroupBox("Clip Extraction")
-        form = QFormLayout(extract_group)
-        form.setSpacing(8)
+        h.addWidget(dot)
+        h.addWidget(title)
+        h.addStretch()
+        return header
 
-        self.le_input = QLineEdit()
-        self.le_input.setPlaceholderText("Select a video file…")
-        row_input, btn_input = _path_row(self, "Input video", self.le_input)
+    def _build_tabs(self) -> QTabWidget:
+        self.tabs = QTabWidget()
+        self.tabs.setDocumentMode(True)
+        self.tabs.addTab(_scroll_tab(self._build_extract_tab()), "Extract")
+        self.tabs.addTab(_scroll_tab(self._build_train_tab()), "Train")
+        self.tabs.currentChanged.connect(self._animate_tab_in)
+        return self.tabs
+
+    def _build_extract_tab(self) -> QWidget:
+        page = QWidget()
+        vbox = QVBoxLayout(page)
+        vbox.setContentsMargins(20, 24, 20, 24)
+        vbox.setSpacing(16)
+
+        # ── Source ────────────────────────────────────────────────────────────
+        vbox.addWidget(_section_header("Source"))
+
+        self.le_input = _make_line_edit("Select a movie or footage file…")
+        btn_input = _browse_btn()
         btn_input.clicked.connect(self._browse_input)
-        form.addRow("Input video:", row_input)
+        vbox.addWidget(_field("Input video", self.le_input, btn_input))
 
-        self.le_character = QLineEdit()
-        self.le_character.setPlaceholderText("e.g. Walter White  (leave blank to skip)")
-        form.addRow("Character name:", self.le_character)
+        self.le_character = _make_line_edit("e.g.  Walter White   (leave blank to skip)")
+        vbox.addWidget(_field("Character name", self.le_character))
 
-        self.le_refs = QLineEdit()
-        self.le_refs.setPlaceholderText("Reference images (5–10 face photos)")
-        row_refs, btn_refs = _path_row(self, "Ref images", self.le_refs)
+        self.le_refs = _make_line_edit("5 – 10 reference face photos for a new character")
+        btn_refs = _browse_btn()
         btn_refs.clicked.connect(self._browse_refs)
-        form.addRow("Ref images:", row_refs)
+        vbox.addWidget(_field("Reference images  (new character)", self.le_refs, btn_refs))
 
-        self.le_library = QLineEdit()
-        self.le_library.setPlaceholderText("Or point to existing clip folder for this character")
-        row_lib, btn_lib = _path_row(self, "Clips library", self.le_library)
+        self.le_library = _make_line_edit("Existing clip folder to learn face from")
+        btn_lib = _browse_btn()
         btn_lib.clicked.connect(self._browse_library)
-        form.addRow("Clips library:", row_lib)
+        vbox.addWidget(_field("Clips library  (known character)", self.le_library, btn_lib))
 
-        self.le_model = QLineEdit()
-        self.le_model.setPlaceholderText("Optional: trained aesthetic model (.pt)")
-        row_model, btn_model = _path_row(self, "Model", self.le_model)
-        btn_model.clicked.connect(self._browse_model)
-        form.addRow("Aesthetic model:", row_model)
+        vbox.addWidget(_divider())
 
-        self.le_output = QLineEdit()
-        self.le_output.setText("output_clips")
-        row_out, btn_out = _path_row(self, "Output folder", self.le_output)
+        # ── Output ────────────────────────────────────────────────────────────
+        vbox.addWidget(_section_header("Output"))
+
+        self.le_output = _make_line_edit(text="output_clips")
+        btn_out = _browse_btn()
         btn_out.clicked.connect(self._browse_output)
-        form.addRow("Output folder:", row_out)
+        vbox.addWidget(_field("Output folder", self.le_output, btn_out))
 
-        vbox.addWidget(extract_group)
+        self.le_model = _make_line_edit("Optional: trained aesthetic model  (.pt)")
+        btn_model = _browse_btn()
+        btn_model.clicked.connect(self._browse_model)
+        vbox.addWidget(_field("Aesthetic model", self.le_model, btn_model))
 
-        # ── Advanced settings ─────────────────────────────────────────────────
-        adv_group = QGroupBox("Advanced")
-        adv_form = QFormLayout(adv_group)
-        adv_group.setCheckable(True)
-        adv_group.setChecked(False)
+        vbox.addWidget(_divider())
 
-        self.spin_motion = QDoubleSpinBox()
-        self.spin_motion.setRange(0.1, 20.0)
-        self.spin_motion.setSingleStep(0.1)
-        self.spin_motion.setValue(1.2)
-        adv_form.addRow("Min motion score:", self.spin_motion)
+        # ── Settings (collapsible) ────────────────────────────────────────────
+        settings = CollapsibleSection("Settings")
+        vbox.addWidget(settings)
 
-        self.spin_aesthetic = QDoubleSpinBox()
-        self.spin_aesthetic.setRange(0.1, 1.0)
-        self.spin_aesthetic.setSingleStep(0.05)
-        self.spin_aesthetic.setValue(0.55)
-        adv_form.addRow("Min aesthetic score:", self.spin_aesthetic)
+        self.sld_motion = LabeledSlider(0.1, 20.0, 1.2, scale=10, decimals=1)
+        settings.add_widget(_field("Min motion score", self.sld_motion))
 
-        self.spin_scene_thresh = QDoubleSpinBox()
-        self.spin_scene_thresh.setRange(5.0, 100.0)
-        self.spin_scene_thresh.setSingleStep(1.0)
-        self.spin_scene_thresh.setValue(27.0)
-        adv_form.addRow("Scene cut threshold:", self.spin_scene_thresh)
+        self.sld_aesthetic = LabeledSlider(0.1, 1.0, 0.55, scale=100, decimals=2)
+        settings.add_widget(_field("Min aesthetic score", self.sld_aesthetic))
 
-        vbox.addWidget(adv_group)
+        self.sld_scene = LabeledSlider(5.0, 100.0, 27.0, scale=10, decimals=1)
+        settings.add_widget(_field("Scene cut threshold", self.sld_scene))
 
-        # ── Training form ─────────────────────────────────────────────────────
-        train_group = QGroupBox("Train Aesthetic Model")
-        train_form = QFormLayout(train_group)
+        vbox.addStretch()
 
-        self.le_train_positives = QLineEdit()
-        self.le_train_positives.setPlaceholderText("Folder containing your 4000+ positive clips")
-        row_tp, btn_tp = _path_row(self, "Positives", self.le_train_positives)
+        # ── Action button ─────────────────────────────────────────────────────
+        self.btn_extract = QPushButton("Extract Clips")
+        self.btn_extract.setObjectName("primary")
+        self.btn_extract.setCursor(Qt.PointingHandCursor)
+        self.btn_extract.clicked.connect(self._start_extraction)
+        vbox.addWidget(self.btn_extract)
+
+        return page
+
+    def _build_train_tab(self) -> QWidget:
+        page = QWidget()
+        vbox = QVBoxLayout(page)
+        vbox.setContentsMargins(20, 24, 20, 24)
+        vbox.setSpacing(16)
+
+        # ── Training data ─────────────────────────────────────────────────────
+        vbox.addWidget(_section_header("Training Data"))
+
+        self.le_train_positives = _make_line_edit("Folder with your 4 000 + positive clips")
+        btn_tp = _browse_btn()
         btn_tp.clicked.connect(self._browse_train_positives)
-        train_form.addRow("Positives dir:", row_tp)
+        vbox.addWidget(_field("Positives directory", self.le_train_positives, btn_tp))
 
-        self.le_train_sources = QLineEdit()
-        self.le_train_sources.setPlaceholderText("Raw source videos folder (for negative generation)")
-        row_ts, btn_ts = _path_row(self, "Source videos", self.le_train_sources)
+        self.le_train_sources = _make_line_edit("Raw source video folder  (for auto-generating negatives)")
+        btn_ts = _browse_btn()
         btn_ts.clicked.connect(self._browse_train_sources)
-        train_form.addRow("Source videos:", row_ts)
+        vbox.addWidget(_field("Source videos", self.le_train_sources, btn_ts))
 
-        self.le_train_output = QLineEdit()
-        self.le_train_output.setText("models/aesthetic.pt")
-        row_to, btn_to = _path_row(self, "Model output", self.le_train_output)
+        self.le_train_output = _make_line_edit(text="models/aesthetic.pt")
+        btn_to = _browse_btn()
         btn_to.clicked.connect(self._browse_train_output)
-        train_form.addRow("Save model to:", row_to)
+        vbox.addWidget(_field("Save model to", self.le_train_output, btn_to))
+
+        vbox.addWidget(_divider())
+
+        # ── Parameters ────────────────────────────────────────────────────────
+        vbox.addWidget(_section_header("Parameters"))
 
         self.spin_epochs = QSpinBox()
-        self.spin_epochs.setRange(1, 200)
+        self.spin_epochs.setRange(1, 500)
         self.spin_epochs.setValue(20)
-        train_form.addRow("Epochs:", self.spin_epochs)
+        vbox.addWidget(_spin_row("Epochs", self.spin_epochs))
 
         self.spin_batch = QSpinBox()
         self.spin_batch.setRange(2, 128)
         self.spin_batch.setValue(16)
-        train_form.addRow("Batch size:", self.spin_batch)
+        vbox.addWidget(_spin_row("Batch size", self.spin_batch))
 
-        vbox.addWidget(train_group)
+        vbox.addStretch()
 
-        # ── Action buttons ────────────────────────────────────────────────────
-        btn_row = QHBoxLayout()
+        # ── Action button ─────────────────────────────────────────────────────
         self.btn_train = QPushButton("Train Model")
-        self.btn_train.setFixedHeight(38)
+        self.btn_train.setObjectName("primary")
+        self.btn_train.setCursor(Qt.PointingHandCursor)
         self.btn_train.clicked.connect(self._start_training)
-        btn_row.addWidget(self.btn_train)
+        vbox.addWidget(self.btn_train)
 
-        self.btn_extract = QPushButton("Extract Clips")
-        self.btn_extract.setFixedHeight(38)
-        self.btn_extract.setDefault(True)
-        self.btn_extract.clicked.connect(self._start_extraction)
-        btn_row.addWidget(self.btn_extract)
-        vbox.addLayout(btn_row)
+        return page
 
-        # ── Progress ──────────────────────────────────────────────────────────
+    def _build_bottom_panel(self) -> QWidget:
+        panel = QWidget()
+        panel.setStyleSheet("background: #0a0a0a; border-top: 1px solid #151515;")
+
+        vbox = QVBoxLayout(panel)
+        vbox.setContentsMargins(20, 12, 20, 16)
+        vbox.setSpacing(6)
+
+        # Status / percentage row
+        status_row = QWidget()
+        h = QHBoxLayout(status_row)
+        h.setContentsMargins(0, 0, 0, 0)
+
+        self.status_label = QLabel("")
+        self.status_label.setStyleSheet("color: #555555; font-size: 12px;")
+        self.status_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        h.addWidget(self.status_label)
+
+        self.pct_label = QLabel("0%")
+        self.pct_label.setStyleSheet("color: #444444; font-size: 11px;")
+        self.pct_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        h.addWidget(self.pct_label)
+
+        vbox.addWidget(status_row)
+
+        # Progress bar
         self.progress_bar = QProgressBar()
         self.progress_bar.setRange(0, 100)
         self.progress_bar.setValue(0)
-        self.progress_bar.setTextVisible(True)
+        self.progress_bar.setTextVisible(False)
         vbox.addWidget(self.progress_bar)
 
-        self.status_label = QLabel("")
-        self.status_label.setWordWrap(True)
-        vbox.addWidget(self.status_label)
+        # Log terminal
+        self.log_view = LogView()
+        self.log_view.setMinimumHeight(150)
+        vbox.addWidget(self.log_view, stretch=1)
 
-        # ── Log output ────────────────────────────────────────────────────────
-        self.log_view = QPlainTextEdit()
-        self.log_view.setReadOnly(True)
-        self.log_view.setMaximumBlockCount(2000)
-        self.log_view.setFont(QFont("Monospace", 8))
-        self.log_view.setMinimumHeight(140)
-        vbox.addWidget(self.log_view)
+        return panel
 
-    def _setup_logging(self):
-        handler = _QtLogHandler(self.log_view)
-        handler.setFormatter(logging.Formatter("%(levelname)s %(name)s: %(message)s"))
+    # ── Logging ───────────────────────────────────────────────────────────────
+
+    def _setup_logging(self) -> None:
+        handler = _ColorLogHandler(self.log_view)
+        handler.setFormatter(logging.Formatter("%(asctime)s  %(levelname)-8s  %(message)s", "%H:%M:%S"))
         logging.getLogger().addHandler(handler)
         logging.getLogger().setLevel(logging.INFO)
 
+    # ── Tab animation ─────────────────────────────────────────────────────────
+
+    def _animate_tab_in(self, index: int) -> None:
+        scroll = self.tabs.widget(index)
+        if not scroll:
+            return
+        effect = QGraphicsOpacityEffect(scroll)
+        scroll.setGraphicsEffect(effect)
+        anim = QPropertyAnimation(effect, b"opacity")
+        anim.setDuration(180)
+        anim.setStartValue(0.0)
+        anim.setEndValue(1.0)
+        anim.setEasingCurve(QEasingCurve.OutQuad)
+        anim.start(QAbstractAnimation.DeleteWhenStopped)
+        # Keep reference alive until animation ends (Python GC)
+        self._last_tab_anim = anim
+
     # ── Browse callbacks ──────────────────────────────────────────────────────
 
-    def _browse_input(self):
-        p = _browse_file(self, "Select input video", "Video files (*.mp4 *.mkv *.mov *.avi *.ts);;All files (*)")
+    def _browse_input(self) -> None:
+        p, _ = QFileDialog.getOpenFileName(
+            self, "Select input video",
+            "", "Video files (*.mp4 *.mkv *.mov *.avi *.ts);;All files (*)"
+        )
         if p:
             self.le_input.setText(p)
 
-    def _browse_refs(self):
-        ps = _browse_files(self, "Select reference face images", "Images (*.jpg *.jpeg *.png *.webp);;All files (*)")
+    def _browse_refs(self) -> None:
+        ps, _ = QFileDialog.getOpenFileNames(
+            self, "Select reference face images",
+            "", "Images (*.jpg *.jpeg *.png *.webp);;All files (*)"
+        )
         if ps:
             self.le_refs.setText(";".join(ps))
 
-    def _browse_library(self):
-        p = _browse_dir(self, "Select clips library folder")
+    def _browse_library(self) -> None:
+        p = QFileDialog.getExistingDirectory(self, "Select clips library folder")
         if p:
             self.le_library.setText(p)
 
-    def _browse_model(self):
-        p = _browse_file(self, "Select trained model", "PyTorch model (*.pt *.pth);;All files (*)")
+    def _browse_model(self) -> None:
+        p, _ = QFileDialog.getOpenFileName(
+            self, "Select aesthetic model",
+            "", "PyTorch model (*.pt *.pth);;All files (*)"
+        )
         if p:
             self.le_model.setText(p)
 
-    def _browse_output(self):
-        p = _browse_dir(self, "Select output folder")
+    def _browse_output(self) -> None:
+        p = QFileDialog.getExistingDirectory(self, "Select output folder")
         if p:
             self.le_output.setText(p)
 
-    def _browse_train_positives(self):
-        p = _browse_dir(self, "Select positives clips folder")
+    def _browse_train_positives(self) -> None:
+        p = QFileDialog.getExistingDirectory(self, "Select positives clips folder")
         if p:
             self.le_train_positives.setText(p)
 
-    def _browse_train_sources(self):
-        p = _browse_dir(self, "Select source videos folder")
+    def _browse_train_sources(self) -> None:
+        p = QFileDialog.getExistingDirectory(self, "Select source videos folder")
         if p:
             self.le_train_sources.setText(p)
 
-    def _browse_train_output(self):
-        p, _ = QFileDialog.getSaveFileName(self, "Save model as", "models/aesthetic.pt", "PyTorch model (*.pt *.pth)")
+    def _browse_train_output(self) -> None:
+        p, _ = QFileDialog.getSaveFileName(
+            self, "Save model as",
+            "models/aesthetic.pt", "PyTorch model (*.pt *.pth)"
+        )
         if p:
             self.le_train_output.setText(p)
 
     # ── Action handlers ───────────────────────────────────────────────────────
 
-    def _start_extraction(self):
+    def _start_extraction(self) -> None:
         if self._worker and self._worker.isRunning():
             QMessageBox.warning(self, "Busy", "A job is already running.")
             return
@@ -373,36 +906,36 @@ class MainWindow(QMainWindow):
             input_video=Path(input_video),
             character_name=self.le_character.text().strip(),
             output_dir=Path(self.le_output.text().strip() or "output_clips"),
-            min_motion_score=self.spin_motion.value(),
-            min_aesthetic_score=self.spin_aesthetic.value(),
-            scene_threshold=self.spin_scene_thresh.value(),
+            min_motion_score=self.sld_motion.value(),
+            min_aesthetic_score=self.sld_aesthetic.value(),
+            scene_threshold=self.sld_scene.value(),
         )
 
         refs_text = self.le_refs.text().strip()
         if refs_text:
             cfg.reference_images = [Path(p) for p in refs_text.split(";") if p]
 
-        lib_text = self.le_library.text().strip()
-        if lib_text:
-            cfg.clips_library_dir = Path(lib_text)
+        lib = self.le_library.text().strip()
+        if lib:
+            cfg.clips_library_dir = Path(lib)
 
-        model_text = self.le_model.text().strip()
-        if model_text:
-            cfg.model_path = Path(model_text)
+        model = self.le_model.text().strip()
+        if model:
+            cfg.model_path = Path(model)
 
-        # Cache face db next to output
         if cfg.character_name:
-            cfg.face_db_path = cfg.output_dir / f"facedb_{cfg.character_name.replace(' ', '_')}.pkl"
+            cfg.face_db_path = (
+                cfg.output_dir / f"facedb_{cfg.character_name.replace(' ', '_')}.pkl"
+            )
 
         self._worker = ExtractionWorker(cfg)
         self._worker.progress.connect(self._on_progress)
         self._worker.finished.connect(self._on_extraction_done)
         self._worker.error.connect(self._on_error)
-        self._set_buttons_enabled(False)
-        self.progress_bar.setValue(0)
+        self._set_busy(True)
         self._worker.start()
 
-    def _start_training(self):
+    def _start_training(self) -> None:
         if self._worker and self._worker.isRunning():
             QMessageBox.warning(self, "Busy", "A job is already running.")
             return
@@ -412,49 +945,60 @@ class MainWindow(QMainWindow):
         output = self.le_train_output.text().strip() or "models/aesthetic.pt"
 
         if not positives or not sources:
-            QMessageBox.warning(self, "Missing fields", "Positives folder and source videos folder are required.")
+            QMessageBox.warning(
+                self, "Missing fields",
+                "Positives folder and source videos folder are both required."
+            )
             return
 
         self._worker = TrainingWorker(
-            Path(positives),
-            Path(sources),
-            Path(output),
-            self.spin_epochs.value(),
-            self.spin_batch.value(),
+            Path(positives), Path(sources), Path(output),
+            self.spin_epochs.value(), self.spin_batch.value(),
         )
         self._worker.progress.connect(self._on_progress)
         self._worker.finished.connect(self._on_training_done)
         self._worker.error.connect(self._on_error)
-        self._set_buttons_enabled(False)
-        self.progress_bar.setValue(0)
+        self._set_busy(True)
         self._worker.start()
 
-    # ── Worker signal handlers ────────────────────────────────────────────────
+    # ── Signal handlers ───────────────────────────────────────────────────────
 
-    def _on_progress(self, message: str, pct: float):
-        self.progress_bar.setValue(int(pct * 100))
+    def _on_progress(self, message: str, pct: float) -> None:
+        new_val = int(pct * 100)
+        if self._prog_anim:
+            self._prog_anim.stop()
+            self._prog_anim.setStartValue(self.progress_bar.value())
+            self._prog_anim.setEndValue(new_val)
+            self._prog_anim.start()
+        else:
+            self.progress_bar.setValue(new_val)
+        self.pct_label.setText(f"{new_val}%")
         self.status_label.setText(message)
 
-    def _on_extraction_done(self, results):
-        self._set_buttons_enabled(True)
-        self.progress_bar.setValue(100)
+    def _on_extraction_done(self, results: list) -> None:
+        self._set_busy(False)
         n = len(results)
         out = self.le_output.text().strip()
-        self.status_label.setText(f"Done. {n} clips saved to {out}")
+        self._on_progress(f"Done. {n} clips → {out}", 1.0)
         QMessageBox.information(self, "Complete", f"Extracted {n} clips to:\n{out}")
 
-    def _on_training_done(self, model_path: str):
-        self._set_buttons_enabled(True)
-        self.progress_bar.setValue(100)
-        self.status_label.setText(f"Training complete. Model saved to {model_path}")
+    def _on_training_done(self, model_path: str) -> None:
+        self._set_busy(False)
         self.le_model.setText(model_path)
+        self._on_progress(f"Training complete. Saved → {model_path}", 1.0)
         QMessageBox.information(self, "Training Complete", f"Model saved to:\n{model_path}")
 
-    def _on_error(self, msg: str):
-        self._set_buttons_enabled(True)
+    def _on_error(self, msg: str) -> None:
+        self._set_busy(False)
         self.status_label.setText(f"Error: {msg}")
+        self.status_label.setStyleSheet("color: #ff4444; font-size: 12px;")
         QMessageBox.critical(self, "Error", msg)
 
-    def _set_buttons_enabled(self, enabled: bool):
-        self.btn_extract.setEnabled(enabled)
-        self.btn_train.setEnabled(enabled)
+    def _set_busy(self, busy: bool) -> None:
+        self.btn_extract.setEnabled(not busy)
+        self.btn_train.setEnabled(not busy)
+        if not busy:
+            self.status_label.setStyleSheet("color: #555555; font-size: 12px;")
+        if busy:
+            self.progress_bar.setValue(0)
+            self.pct_label.setText("0%")

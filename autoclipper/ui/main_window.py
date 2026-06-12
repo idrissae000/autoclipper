@@ -31,6 +31,8 @@ from PyQt5.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QListWidget,
+    QListWidgetItem,
     QMainWindow,
     QMessageBox,
     QProgressBar,
@@ -272,6 +274,37 @@ QToolButton#collapse_toggle:hover { color: #aaaaaa; }
 QMessageBox { background: #161616; }
 QMessageBox QLabel { color: #f0f0f0; }
 QMessageBox QPushButton { min-width: 80px; }
+
+/* ── Multi-path list ──────────────────────────────────────── */
+QListWidget {
+    background: #111111;
+    border: 1px solid #2a2a2a;
+    border-radius: 8px;
+    outline: none;
+    padding: 3px;
+}
+QListWidget::item {
+    background: transparent;
+    border-radius: 4px;
+    padding: 0;
+    margin: 1px 0;
+}
+QListWidget::item:hover { background: #181818; }
+QListWidget::item:selected { background: #1a1010; }
+
+QPushButton#add_btn {
+    background: transparent;
+    color: #555555;
+    border: 1px dashed #2a2a2a;
+    border-radius: 6px;
+    padding: 6px 14px;
+    font-size: 12px;
+}
+QPushButton#add_btn:hover {
+    color: #c0392b;
+    border-color: #c0392b;
+    border-style: solid;
+}
 """
 
 
@@ -444,7 +477,158 @@ class LabeledSlider(QWidget):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Worker threads (logic unchanged from original)
+# Multi-path list widget
+# ─────────────────────────────────────────────────────────────────────────────
+
+_VIDEO_FILTER = "Video files (*.mp4 *.mov *.m4v *.mkv *.avi);;All files (*)"
+
+
+class _PathRow(QWidget):
+    """Single row inside MultiPathList – shows path name + remove button."""
+
+    remove_requested = pyqtSignal()
+
+    def __init__(self, path: Path, parent=None):
+        super().__init__(parent)
+        self.path = path
+        self.setToolTip(str(path))
+
+        h = QHBoxLayout(self)
+        h.setContentsMargins(10, 4, 6, 4)
+        h.setSpacing(8)
+
+        kind = QLabel("FILE" if path.is_file() else "DIR")
+        kind.setFixedWidth(30)
+        kind.setStyleSheet(
+            "color: #c0392b; font-size: 9px; font-weight: 700; letter-spacing: 0.5px;"
+        )
+
+        name_lbl = QLabel(path.name or str(path))
+        name_lbl.setStyleSheet("color: #cccccc; font-size: 12px;")
+        name_lbl.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+
+        rm = QPushButton("×")
+        rm.setFixedSize(22, 22)
+        rm.setStyleSheet(
+            "QPushButton { background: transparent; color: #555555; border: none; "
+            "font-size: 15px; font-weight: 300; padding: 0; }"
+            "QPushButton:hover { color: #ff4444; }"
+        )
+        rm.setCursor(Qt.PointingHandCursor)
+        rm.clicked.connect(self.remove_requested)
+
+        h.addWidget(kind)
+        h.addWidget(name_lbl)
+        h.addWidget(rm)
+
+
+class MultiPathList(QWidget):
+    """
+    An add/remove list for multiple video file and/or folder paths.
+
+    Shows a QListWidget with per-item remove buttons, plus "Add File"
+    and/or "Add Folder" buttons underneath.
+    """
+
+    changed = pyqtSignal()
+
+    def __init__(
+        self,
+        accept_files: bool = True,
+        accept_dirs: bool = True,
+        parent=None,
+    ):
+        super().__init__(parent)
+        self._accept_files = accept_files
+        self._accept_dirs = accept_dirs
+        self._paths: list[Path] = []
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(6)
+
+        self._list = QListWidget()
+        self._list.setSelectionMode(QListWidget.NoSelection)
+        self._list.setFocusPolicy(Qt.NoFocus)
+        self._list.setSpacing(1)
+        self._list.setMinimumHeight(76)
+        self._list.setMaximumHeight(200)
+        root.addWidget(self._list)
+
+        btn_row = QWidget()
+        btn_h = QHBoxLayout(btn_row)
+        btn_h.setContentsMargins(0, 0, 0, 0)
+        btn_h.setSpacing(6)
+
+        if accept_files:
+            b = QPushButton("+ Add File")
+            b.setObjectName("add_btn")
+            b.setCursor(Qt.PointingHandCursor)
+            b.clicked.connect(self._browse_files)
+            btn_h.addWidget(b)
+
+        if accept_dirs:
+            b = QPushButton("+ Add Folder")
+            b.setObjectName("add_btn")
+            b.setCursor(Qt.PointingHandCursor)
+            b.clicked.connect(self._browse_dir)
+            btn_h.addWidget(b)
+
+        btn_h.addStretch()
+        root.addWidget(btn_row)
+
+    # ── browsing ──────────────────────────────────────────────────────────────
+
+    def _browse_files(self) -> None:
+        paths, _ = QFileDialog.getOpenFileNames(
+            self.window(), "Select video files", "", _VIDEO_FILTER
+        )
+        for p in paths:
+            self._add(Path(p))
+
+    def _browse_dir(self) -> None:
+        p = QFileDialog.getExistingDirectory(self.window(), "Select folder")
+        if p:
+            self._add(Path(p))
+
+    # ── internal list management ──────────────────────────────────────────────
+
+    def _add(self, path: Path) -> None:
+        if path in self._paths:
+            return
+        self._paths.append(path)
+
+        row_w = _PathRow(path)
+        item = QListWidgetItem(self._list)
+        item.setSizeHint(row_w.sizeHint())
+        self._list.addItem(item)
+        self._list.setItemWidget(item, row_w)
+
+        # capture both in the lambda to avoid closure-over-loop issues
+        row_w.remove_requested.connect(
+            lambda _p=path, _item=item: self._remove(_p, _item)
+        )
+        self.changed.emit()
+
+    def _remove(self, path: Path, item: QListWidgetItem) -> None:
+        row = self._list.row(item)
+        if row >= 0:
+            self._list.takeItem(row)
+        if path in self._paths:
+            self._paths.remove(path)
+        self.changed.emit()
+
+    # ── public API ────────────────────────────────────────────────────────────
+
+    def paths(self) -> list[Path]:
+        return list(self._paths)
+
+    def is_empty(self) -> bool:
+        return not self._paths
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Worker threads
 # ─────────────────────────────────────────────────────────────────────────────
 
 class ExtractionWorker(QThread):
@@ -452,18 +636,34 @@ class ExtractionWorker(QThread):
     finished = pyqtSignal(list)
     error = pyqtSignal(str)
 
-    def __init__(self, config):
+    def __init__(self, base_config, input_paths: list[Path]):
         super().__init__()
-        self.config = config
+        self.base_config = base_config
+        self.input_paths = input_paths
 
     def run(self):
-        try:
-            from autoclipper.pipeline import run
-            results = run(self.config, progress_cb=lambda m, p: self.progress.emit(m, p))
-            self.finished.emit(results)
-        except Exception as e:
-            log.exception("Extraction failed")
-            self.error.emit(str(e))
+        import copy
+        from autoclipper.pipeline import run
+
+        all_results: list = []
+        total = len(self.input_paths)
+
+        for i, path in enumerate(self.input_paths):
+            cfg = copy.copy(self.base_config)
+            cfg.input_video = path
+
+            def cb(msg: str, pct: float, _i: int = i, _n: int = total) -> None:
+                overall = (_i + pct) / _n
+                self.progress.emit(f"[{_i + 1}/{_n}]  {msg}", overall)
+
+            try:
+                results = run(cfg, progress_cb=cb)
+                all_results.extend(results)
+            except Exception as e:
+                log.exception("Extraction failed on %s", path.name)
+                self.error.emit(f"{path.name}: {e}")
+
+        self.finished.emit(all_results)
 
 
 class TrainingWorker(QThread):
@@ -471,10 +671,17 @@ class TrainingWorker(QThread):
     finished = pyqtSignal(str)
     error = pyqtSignal(str)
 
-    def __init__(self, positives_dir, sources_dir, output_model, epochs, batch_size):
+    def __init__(
+        self,
+        positives_dirs: list[Path],
+        source_paths: list[Path],
+        output_model: Path,
+        epochs: int,
+        batch_size: int,
+    ):
         super().__init__()
-        self.positives_dir = positives_dir
-        self.sources_dir = sources_dir
+        self.positives_dirs = positives_dirs
+        self.source_paths = source_paths
         self.output_model = output_model
         self.epochs = epochs
         self.batch_size = batch_size
@@ -483,8 +690,8 @@ class TrainingWorker(QThread):
         try:
             from autoclipper.trainer import build_and_train
             build_and_train(
-                self.positives_dir,
-                self.sources_dir,
+                self.positives_dirs,
+                self.source_paths,
                 self.output_model,
                 epochs=self.epochs,
                 batch_size=self.batch_size,
@@ -661,10 +868,11 @@ class MainWindow(QMainWindow):
         # ── Source ────────────────────────────────────────────────────────────
         vbox.addWidget(_section_header("Source"))
 
-        self.le_input = _make_line_edit("Select a movie or footage file…")
-        btn_input = _browse_btn()
-        btn_input.clicked.connect(self._browse_input)
-        vbox.addWidget(_field("Input video", self.le_input, btn_input))
+        self.ml_input = MultiPathList(accept_files=True, accept_dirs=True)
+        vbox.addWidget(_field(
+            "Input videos / season folders  (add as many as you like)",
+            self.ml_input,
+        ))
 
         self.le_character = _make_line_edit("e.g.  Walter White   (leave blank to skip)")
         vbox.addWidget(_field("Character name", self.le_character))
@@ -729,27 +937,17 @@ class MainWindow(QMainWindow):
         # ── Training data ─────────────────────────────────────────────────────
         vbox.addWidget(_section_header("Training Data"))
 
-        self.le_train_positives = _make_line_edit("Folder with your 4 000 + positive clips")
-        btn_tp = _browse_btn()
-        btn_tp.clicked.connect(self._browse_train_positives)
-        vbox.addWidget(_field("Positives directory", self.le_train_positives, btn_tp))
+        self.ml_train_positives = MultiPathList(accept_files=False, accept_dirs=True)
+        vbox.addWidget(_field(
+            "Positives directories  (add multiple shows / characters)",
+            self.ml_train_positives,
+        ))
 
-        self.le_train_sources = _make_line_edit("Single video file or folder of source videos  (for negatives)")
-        btn_ts_file = _browse_btn("File")
-        btn_ts_file.setFixedWidth(58)
-        btn_ts_file.clicked.connect(self._browse_train_sources_file)
-        btn_ts_dir = _browse_btn("Folder")
-        btn_ts_dir.setFixedWidth(66)
-        btn_ts_dir.clicked.connect(self._browse_train_sources_dir)
-        # Two browse buttons side by side – build the row manually
-        src_row = QWidget()
-        src_h = QHBoxLayout(src_row)
-        src_h.setContentsMargins(0, 0, 0, 0)
-        src_h.setSpacing(6)
-        src_h.addWidget(self.le_train_sources)
-        src_h.addWidget(btn_ts_file)
-        src_h.addWidget(btn_ts_dir)
-        vbox.addWidget(_field("Source videos", src_row))
+        self.ml_train_sources = MultiPathList(accept_files=True, accept_dirs=True)
+        vbox.addWidget(_field(
+            "Source videos for negatives  (files and/or folders)",
+            self.ml_train_sources,
+        ))
 
         self.le_train_output = _make_line_edit(text="models/aesthetic.pt")
         btn_to = _browse_btn()
@@ -848,18 +1046,10 @@ class MainWindow(QMainWindow):
 
     # ── Browse callbacks ──────────────────────────────────────────────────────
 
-    def _browse_input(self) -> None:
-        p, _ = QFileDialog.getOpenFileName(
-            self, "Select input video",
-            "", "Video files (*.mp4 *.mkv *.mov *.avi *.ts);;All files (*)"
-        )
-        if p:
-            self.le_input.setText(p)
-
     def _browse_refs(self) -> None:
         ps, _ = QFileDialog.getOpenFileNames(
             self, "Select reference face images",
-            "", "Images (*.jpg *.jpeg *.png *.webp);;All files (*)"
+            "", "Images (*.jpg *.jpeg *.png *.bmp *.webp);;All files (*)"
         )
         if ps:
             self.le_refs.setText(";".join(ps))
@@ -882,24 +1072,6 @@ class MainWindow(QMainWindow):
         if p:
             self.le_output.setText(p)
 
-    def _browse_train_positives(self) -> None:
-        p = QFileDialog.getExistingDirectory(self, "Select positives clips folder")
-        if p:
-            self.le_train_positives.setText(p)
-
-    def _browse_train_sources_file(self) -> None:
-        p, _ = QFileDialog.getOpenFileName(
-            self, "Select source video file",
-            "", "Video files (*.mp4 *.mkv *.mov *.avi *.ts);;All files (*)"
-        )
-        if p:
-            self.le_train_sources.setText(p)
-
-    def _browse_train_sources_dir(self) -> None:
-        p = QFileDialog.getExistingDirectory(self, "Select source videos folder")
-        if p:
-            self.le_train_sources.setText(p)
-
     def _browse_train_output(self) -> None:
         p, _ = QFileDialog.getSaveFileName(
             self, "Save model as",
@@ -915,17 +1087,33 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Busy", "A job is already running.")
             return
 
+        from autoclipper.constants import scan_for_videos, VIDEO_EXTENSIONS
         from autoclipper.pipeline import PipelineConfig
 
-        input_video = self.le_input.text().strip()
-        if not input_video:
-            QMessageBox.warning(self, "No input", "Please select an input video file.")
+        if self.ml_input.is_empty():
+            QMessageBox.warning(self, "No input", "Add at least one video file or folder.")
             return
 
-        cfg = PipelineConfig(
-            input_video=Path(input_video),
-            character_name=self.le_character.text().strip(),
-            output_dir=Path(self.le_output.text().strip() or "output_clips"),
+        # Expand any folders to individual video files
+        input_paths: list[Path] = []
+        for p in self.ml_input.paths():
+            if p.is_file():
+                input_paths.append(p)
+            else:
+                input_paths.extend(scan_for_videos(p))
+
+        if not input_paths:
+            QMessageBox.warning(self, "No videos found",
+                                "No supported video files were found in the selected paths.")
+            return
+
+        out_dir = Path(self.le_output.text().strip() or "output_clips")
+        char = self.le_character.text().strip()
+
+        base_cfg = PipelineConfig(
+            input_video=input_paths[0],   # overridden per-file in worker
+            character_name=char,
+            output_dir=out_dir,
             min_motion_score=self.sld_motion.value(),
             min_aesthetic_score=self.sld_aesthetic.value(),
             scene_threshold=self.sld_scene.value(),
@@ -933,22 +1121,20 @@ class MainWindow(QMainWindow):
 
         refs_text = self.le_refs.text().strip()
         if refs_text:
-            cfg.reference_images = [Path(p) for p in refs_text.split(";") if p]
+            base_cfg.reference_images = [Path(p) for p in refs_text.split(";") if p]
 
         lib = self.le_library.text().strip()
         if lib:
-            cfg.clips_library_dir = Path(lib)
+            base_cfg.clips_library_dir = Path(lib)
 
         model = self.le_model.text().strip()
         if model:
-            cfg.model_path = Path(model)
+            base_cfg.model_path = Path(model)
 
-        if cfg.character_name:
-            cfg.face_db_path = (
-                cfg.output_dir / f"facedb_{cfg.character_name.replace(' ', '_')}.pkl"
-            )
+        if char:
+            base_cfg.face_db_path = out_dir / f"facedb_{char.replace(' ', '_')}.pkl"
 
-        self._worker = ExtractionWorker(cfg)
+        self._worker = ExtractionWorker(base_cfg, input_paths)
         self._worker.progress.connect(self._on_progress)
         self._worker.finished.connect(self._on_extraction_done)
         self._worker.error.connect(self._on_error)
@@ -960,19 +1146,19 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Busy", "A job is already running.")
             return
 
-        positives = self.le_train_positives.text().strip()
-        sources = self.le_train_sources.text().strip()
+        positives_dirs = self.ml_train_positives.paths()
+        source_paths = self.ml_train_sources.paths()
         output = self.le_train_output.text().strip() or "models/aesthetic.pt"
 
-        if not positives or not sources:
+        if not positives_dirs or not source_paths:
             QMessageBox.warning(
                 self, "Missing fields",
-                "Positives folder and source videos (file or folder) are both required."
+                "Add at least one positives folder and one source video or folder."
             )
             return
 
         self._worker = TrainingWorker(
-            Path(positives), Path(sources), Path(output),
+            positives_dirs, source_paths, Path(output),
             self.spin_epochs.value(), self.spin_batch.value(),
         )
         self._worker.progress.connect(self._on_progress)

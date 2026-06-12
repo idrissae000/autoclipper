@@ -60,9 +60,10 @@ class FaceDatabase:
 
         Samples up to *max_frames* frames total across all clips.
         """
-        clips = sorted(clip_dir.rglob("*.mp4"))
+        from autoclipper.constants import scan_for_videos
+        clips = scan_for_videos(clip_dir)
         if not clips:
-            log.warning("No mp4 files found in %s", clip_dir)
+            log.warning("No video files found in %s", clip_dir)
             return 0
 
         embeddings = []

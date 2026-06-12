@@ -3,8 +3,8 @@ Training entry point: scan positive clip library, generate negatives, train mode
 
 Usage (CLI):
   python -m autoclipper.trainer \
-      --positives /path/to/clips \
-      --sources   /path/to/raw_footage \
+      --positives /clips/show_a /clips/show_b \
+      --sources   /raw/movie1.mp4 /raw/season2 \
       --output    models/aesthetic.pt
 """
 
@@ -14,34 +14,44 @@ import argparse
 import logging
 from pathlib import Path
 
+from autoclipper.constants import VIDEO_EXTENSIONS, scan_for_videos
+
 log = logging.getLogger(__name__)
 
 
-def collect_positives(clips_root: Path) -> list[Path]:
-    """Recursively collect all mp4 files under *clips_root* as positive examples."""
-    clips = sorted(clips_root.rglob("*.mp4"))
-    log.info("Found %d positive clips in %s", len(clips), clips_root)
-    return clips
+def collect_positives(roots: list[Path]) -> list[Path]:
+    """Recursively collect all video clips under one or more *roots*."""
+    clips: list[Path] = []
+    for root in roots:
+        clips.extend(scan_for_videos(root))
+    result = sorted(set(clips))
+    log.info("Found %d positive clips across %d director%s",
+             len(result), len(roots), "y" if len(roots) == 1 else "ies")
+    return result
 
 
-_VIDEO_EXTS = {".mp4", ".mkv", ".mov", ".avi", ".ts"}
+def resolve_source_videos(sources: list[Path]) -> list[Path]:
+    """
+    Accept any mix of individual video files and folders.
 
-
-def resolve_source_videos(source_path: Path) -> list[Path]:
-    """Accept a single video file or a directory; return a list of video paths."""
-    if source_path.is_file():
-        if source_path.suffix.lower() not in _VIDEO_EXTS:
-            raise ValueError(f"Not a recognised video file: {source_path}")
-        return [source_path]
-    videos = []
-    for ext in _VIDEO_EXTS:
-        videos.extend(source_path.rglob(f"*{ext}"))
-    return sorted(videos)
+    Files are validated and used directly.
+    Folders are scanned recursively for all supported video formats.
+    Returns a deduplicated, sorted list.
+    """
+    videos: list[Path] = []
+    for src in sources:
+        if src.is_file():
+            if src.suffix.lower() not in VIDEO_EXTENSIONS:
+                raise ValueError(f"Not a recognised video file: {src}")
+            videos.append(src)
+        else:
+            videos.extend(scan_for_videos(src))
+    return sorted(set(videos))
 
 
 def build_and_train(
-    positives_dir: Path,
-    source_videos_path: Path,
+    positives_dirs: list[Path],
+    source_videos: list[Path],
     output_model: Path,
     *,
     negatives_dir: Path | None = None,
@@ -51,19 +61,19 @@ def build_and_train(
 ):
     from autoclipper.clip_scorer import generate_negatives, train
 
-    positives = collect_positives(positives_dir)
+    positives = collect_positives(positives_dirs)
     if not positives:
-        raise ValueError(f"No positive clips found in {positives_dir}")
+        raise ValueError(f"No positive clips found in: {positives_dirs}")
 
     neg_dir = negatives_dir or output_model.parent / "negatives"
-    source_videos = resolve_source_videos(source_videos_path)
+    source_paths = resolve_source_videos(source_videos)
 
-    if not source_videos:
-        raise ValueError(f"No source videos found in {source_videos_path}")
+    if not source_paths:
+        raise ValueError(f"No source videos found in: {source_videos}")
 
-    log.info("Generating negative examples from %d source videos…", len(source_videos))
+    log.info("Generating negative examples from %d source videos…", len(source_paths))
     negatives = generate_negatives(
-        source_videos,
+        source_paths,
         positives,
         neg_dir,
         target_count=min(len(positives), 3000),
@@ -84,8 +94,14 @@ def main():
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
     ap = argparse.ArgumentParser(description="Train the AutoClipper aesthetic model")
-    ap.add_argument("--positives", required=True, type=Path, help="Root folder of positive clips")
-    ap.add_argument("--sources", required=True, type=Path, help="Single video file or folder of source videos for negatives")
+    ap.add_argument(
+        "--positives", required=True, nargs="+", type=Path,
+        help="One or more folders of positive clips",
+    )
+    ap.add_argument(
+        "--sources", required=True, nargs="+", type=Path,
+        help="One or more video files or folders for negative generation",
+    )
     ap.add_argument("--output", default=Path("models/aesthetic.pt"), type=Path)
     ap.add_argument("--negatives-dir", type=Path, help="Where to store generated negatives")
     ap.add_argument("--epochs", type=int, default=20)

@@ -19,6 +19,19 @@ def _ffmpeg() -> str:
     return path
 
 
+def _ff(path: Path) -> str:
+    """
+    Return a file: URI for *path* suitable for passing to ffmpeg/ffprobe.
+
+    FFmpeg's CLI applies glob expansion and URL parsing to bare path arguments,
+    so filenames containing [ ] ( ) @ or other special characters are
+    misinterpreted as character classes or URL syntax.  Prefixing with "file:"
+    routes through FFmpeg's file-protocol handler which passes the string
+    directly to open(), bypassing all pattern interpretation.
+    """
+    return "file:" + str(path.resolve())
+
+
 def preprocess(src: Path, dst: Path, *, progress_cb=None) -> Path:
     """
     Convert *src* to a preprocessed working copy at *dst*.
@@ -33,7 +46,7 @@ def preprocess(src: Path, dst: Path, *, progress_cb=None) -> Path:
 
     cmd = [
         _ffmpeg(), "-y",
-        "-i", str(src),
+        "-i", _ff(src),
         # scale: fit inside 1920×1080 preserving SAR, pad remainder black
         "-vf", (
             f"scale={TARGET_WIDTH}:{TARGET_HEIGHT}:force_original_aspect_ratio=decrease,"
@@ -46,7 +59,7 @@ def preprocess(src: Path, dst: Path, *, progress_cb=None) -> Path:
         "-preset", "fast",
         "-crf", "18",
         "-movflags", "+faststart",
-        str(dst),
+        _ff(dst),
     ]
 
     log.info("Preprocessing %s → %s", src.name, dst.name)
@@ -62,7 +75,7 @@ def get_duration(path: Path) -> float:
             "ffprobe", "-v", "error",
             "-show_entries", "format=duration",
             "-of", "default=noprint_wrappers=1:nokey=1",
-            str(path),
+            _ff(path),
         ],
         capture_output=True, text=True, check=True,
     )
@@ -71,10 +84,9 @@ def get_duration(path: Path) -> float:
 
 def extract_clip(src: Path, start: float, end: float, dst: Path) -> Path:
     """
-    Fast stream-copy cut from *src* between [start, end] seconds → *dst*.
+    Frame-accurate cut from *src* between [start, end] seconds → *dst*.
 
-    Uses keyframe-accurate seeking: first seeks before start with -ss, then
-    re-encodes a short segment to get frame-accurate in/out points.
+    Re-encodes a short segment for frame-accurate in/out points.
     """
     dst.parent.mkdir(parents=True, exist_ok=True)
     duration = end - start
@@ -82,14 +94,14 @@ def extract_clip(src: Path, start: float, end: float, dst: Path) -> Path:
     cmd = [
         _ffmpeg(), "-y",
         "-ss", f"{start:.6f}",
-        "-i", str(src),
+        "-i", _ff(src),
         "-t", f"{duration:.6f}",
         "-c:v", "libx264",
         "-preset", "fast",
         "-crf", "18",
         "-an",
         "-movflags", "+faststart",
-        str(dst),
+        _ff(dst),
     ]
 
     _run(cmd, src)
@@ -128,3 +140,4 @@ def _run(cmd: list[str], src: Path, progress_cb=None) -> None:
     proc.wait()
     if proc.returncode != 0:
         raise RuntimeError(f"ffmpeg exited with code {proc.returncode}")
+
